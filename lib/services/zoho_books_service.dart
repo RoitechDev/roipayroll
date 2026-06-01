@@ -3,12 +3,18 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:roipayroll/models/payroll_transaction_model.dart';
-import 'package:roipayroll/models/zoho_sync_config_model.dart';
 import 'package:roipayroll/services/zoho_oauth_service.dart';
 
 class ZohoBooksService {
   static const Duration _tokenRefreshBuffer = Duration(minutes: 5);
   static const Map<String, String> _defaultAccountMapping = <String, String>{};
+  static const String _proxyBaseUrl = String.fromEnvironment(
+    'ROI_ZOHO_PROXY_URL',
+    defaultValue: 'http://localhost:3000',
+  );
+  static const String _proxyBooksBaseUrl = '$_proxyBaseUrl/zoho/books';
+  static const String _directZohoBooksBaseUrl =
+      'https://www.zohoapis.com/books/v3';
 
   final String organizationId;
   String _authToken;
@@ -26,16 +32,27 @@ class ZohoBooksService {
     required String authToken,
     this.refreshToken,
     DateTime? tokenExpiresAt,
-    this.baseUrl = ZohoSyncConfig.defaultBaseUrl,
+    String? baseUrl,
     Map<String, String>? accountMapping,
     http.Client? httpClient,
     ZohoOAuthService? oauthService,
     this.onTokenRefreshed,
   }) : _authToken = authToken,
        _tokenExpiresAt = tokenExpiresAt,
+       baseUrl = _resolveBaseUrl(baseUrl),
        accountMapping = {..._defaultAccountMapping, ...?accountMapping},
        _httpClient = httpClient ?? http.Client(),
        _oauthService = oauthService ?? ZohoOAuthService();
+
+  static String _resolveBaseUrl(String? baseUrl) {
+    final normalized = baseUrl?.trim();
+    if (normalized == null ||
+        normalized.isEmpty ||
+        normalized == _directZohoBooksBaseUrl) {
+      return _proxyBooksBaseUrl;
+    }
+    return normalized;
+  }
 
   Future<ZohoJournalEntryResponse> createJournalEntry({
     required String referenceNumber,

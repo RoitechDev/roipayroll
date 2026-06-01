@@ -135,6 +135,35 @@ app.post('/zoho/token', async (req, res) => {
   }
 });
 
+app.all('/zoho/books/*', async (req, res) => {
+  const zohoPath = req.params[0];
+  const queryString = new URLSearchParams(req.query).toString();
+  const zohoUrl = `https://www.zohoapis.com/books/v3/${zohoPath}${
+    queryString ? `?${queryString}` : ''
+  }`;
+
+  try {
+    const response = await axios({
+      method: req.method,
+      url: zohoUrl,
+      headers: {
+        Authorization: req.headers.authorization,
+        'Content-Type': req.headers['content-type'] || 'application/json',
+      },
+      data: req.method !== 'GET' ? req.body : undefined,
+      timeout: 15000,
+    });
+    return res.status(response.status).json(response.data);
+  } catch (error) {
+    console.error('Zoho Books request error:', error.message);
+
+    if (error.response) {
+      return res.status(error.response.status).json(error.response.data);
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
 });
