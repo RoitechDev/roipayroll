@@ -1,0 +1,3 @@
+firstName,lastName,email,phone,department,position,basicSalary,bankName,accountNumber
+John,Doe,john.doe@company.com,+2348012345678,Engineering,Software Engineer,500000,First Bank,0123456789
+Jane,Smith,jane.smith@company.com,+2348087654321,Marketing,Marketing Manager,400000,GTBank,9876543210

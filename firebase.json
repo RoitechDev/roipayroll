@@ -1,0 +1,32 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "roipayroll-72aef",
+          "appId": "1:126501481028:android:79133358cb55f79971ea11",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "roipayroll-72aef",
+          "configurations": {
+            "android": "1:126501481028:android:79133358cb55f79971ea11",
+            "web": "1:126501481028:web:13b848bfd1c4ed2271ea11"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "functions": {
+    "source": "functions",
+    "predeploy": [
+      "npm --prefix \"$RESOURCE_DIR\" run build"
+    ]
+  }
+}

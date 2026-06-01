@@ -1,0 +1,26 @@
+// Add this block inside:
+// match /databases/{database}/documents { ... }
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function role() {
+  return isSignedIn()
+    ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+    : null;
+}
+
+function isPayrollOperator() {
+  return role() in ['admin', 'accountant'];
+}
+
+// Mail queue used by Firebase Trigger Email extension
+match /mail/{mailId} {
+  // Only payroll operators can create email jobs from app
+  allow create: if isPayrollOperator();
+
+  // Prevent clients from reading or mutating queued/sent mail payloads
+  allow read, update, delete: if false;
+}
+

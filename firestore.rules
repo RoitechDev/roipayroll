@@ -1,0 +1,369 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function companyUserPath(companyId, uid) {
+      return /databases/$(database)/documents/companies/$(companyId)/users/$(uid);
+    }
+
+    function companyUserExists(companyId) {
+      return isSignedIn() && exists(companyUserPath(companyId, request.auth.uid));
+    }
+
+    function getCompanyUserData(companyId) {
+      return get(companyUserPath(companyId, request.auth.uid)).data;
+    }
+
+    function inCompany(companyId) {
+      return companyUserExists(companyId);
+    }
+
+    function isAdmin(companyId) {
+      return inCompany(companyId) && getCompanyUserData(companyId).role == 'admin';
+    }
+
+    function isOwner(companyId) {
+      return inCompany(companyId) && getCompanyUserData(companyId).role == 'owner';
+    }
+
+    function isHR(companyId) {
+      return inCompany(companyId) && getCompanyUserData(companyId).role == 'hr';
+    }
+
+    function isAccountant(companyId) {
+      return inCompany(companyId) &&
+        getCompanyUserData(companyId).role == 'accountant';
+    }
+
+    function isAdminOrHR(companyId) {
+      return isAdmin(companyId) || isOwner(companyId) || isHR(companyId);
+    }
+
+    function isAdminOrAccountant(companyId) {
+      return isAdmin(companyId) || isOwner(companyId) || isAccountant(companyId);
+    }
+
+    function isAdminOrOwner(companyId) {
+      return isAdmin(companyId) || isOwner(companyId);
+    }
+
+    function isExpenseApprover(companyId) {
+      return isAdmin(companyId) || isOwner(companyId) || isHR(companyId) || isAccountant(companyId);
+    }
+
+    function canViewOwnEmployeeRecord(companyId, employeeId) {
+      return inCompany(companyId) &&
+        employeeId == getCompanyUserData(companyId).employeeId;
+    }
+
+    function isDocumentManager(companyId) {
+      return isAdmin(companyId) || isOwner(companyId) || isHR(companyId);
+    }
+
+    function canManageDeductions(companyId) {
+      return isAdmin(companyId) || isOwner(companyId) || isHR(companyId) || isAccountant(companyId);
+    }
+
+    function targetIsAdminOrHR(companyId, userId) {
+      return exists(companyUserPath(companyId, userId)) &&
+        get(companyUserPath(companyId, userId)).data.role in ['admin', 'hr'];
+    }
+
+    match /{path=**}/users/{userId} {
+      allow read: if isSignedIn() &&
+        (
+          request.auth.uid == userId ||
+          resource.data.id == request.auth.uid
+        );
+      allow write: if false;
+    }
+
+    match /companies/{companyId} {
+      allow read: if inCompany(companyId);
+      allow create: if isSignedIn();
+      allow update: if isAdmin(companyId);
+      allow delete: if false;
+    }
+
+    match /companies/{companyId}/users/{userId} {
+      allow read: if isSignedIn() &&
+        (
+          resource.data.id == request.auth.uid ||
+          request.auth.uid == userId ||
+          inCompany(companyId)
+        );
+      allow create: if isSignedIn() &&
+        (
+          request.auth.uid == userId ||
+          isAdmin(companyId)
+        );
+      allow update: if isSignedIn() &&
+        (
+          request.auth.uid == userId ||
+          isAdmin(companyId)
+        );
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /companies/{companyId}/settings/{settingId} {
+      allow read: if inCompany(companyId);
+      allow write: if isAdminOrOwner(companyId);
+    }
+
+    match /companies/{companyId}/idempotency_locks/{lockKey} {
+      allow read, write: if inCompany(companyId);
+    }
+
+    match /companies/{companyId}/payment_orchestrations/{orchestrationId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if isAdminOrAccountant(companyId);
+      allow delete: if false;
+    }
+
+    match /companies/{companyId}/payroll_transactions/{transactionId} {
+      allow read: if inCompany(companyId);
+      allow create: if isAdminOrAccountant(companyId);
+      allow update, delete: if false;
+    }
+
+    match /companies/{companyId}/employees/{employeeId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/payrolls/{payrollId} {
+      allow read: if inCompany(companyId);
+      allow create: if isAdminOrAccountant(companyId);
+      allow update: if isAdminOrHR(companyId) || isAccountant(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/loans/{loanId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isAdminOrHR(companyId) ||
+          isAccountant(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow create: if inCompany(companyId) &&
+        request.resource.data.employeeId == getCompanyUserData(companyId).employeeId;
+
+      allow update: if isAdminOrAccountant(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/salary_advances/{advanceId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isAdminOrHR(companyId) ||
+          isAccountant(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow create: if inCompany(companyId) &&
+        getCompanyUserData(companyId).role == 'employee' &&
+        request.resource.data.employeeId == getCompanyUserData(companyId).employeeId;
+
+      allow update: if isAdminOrHR(companyId) || isAccountant(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/attendance/{attendanceId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if inCompany(companyId);
+      allow delete: if isAdminOrHR(companyId);
+    }
+
+    match /companies/{companyId}/attendance_summaries/{summaryId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if inCompany(companyId);
+      allow delete: if isAdminOrHR(companyId);
+    }
+
+    match /companies/{companyId}/employee_allowances/{id} {
+      allow read: if inCompany(companyId);
+      allow write: if isAdminOrHR(companyId);
+    }
+
+    match /companies/{companyId}/deduction_types/{typeId} {
+      allow read: if inCompany(companyId);
+      allow write: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/employee_deductions/{deductionId} {
+      allow read: if inCompany(companyId) &&
+        (
+          canManageDeductions(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+      allow create, update: if canManageDeductions(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/deduction_transactions/{transactionId} {
+      allow read: if inCompany(companyId) &&
+        (
+          canManageDeductions(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+      allow create: if canManageDeductions(companyId);
+      allow update, delete: if false;
+    }
+
+    match /companies/{companyId}/expenses/{expenseId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isExpenseApprover(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow create: if inCompany(companyId) &&
+        request.resource.data.employeeId == getCompanyUserData(companyId).employeeId;
+
+      allow update: if isExpenseApprover(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/incentives/{incentiveId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isExpenseApprover(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow create: if inCompany(companyId) &&
+        request.resource.data.employeeId == getCompanyUserData(companyId).employeeId;
+
+      allow update: if isExpenseApprover(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/employee_documents/{documentId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isDocumentManager(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow create: if inCompany(companyId) &&
+        (
+          isDocumentManager(companyId) ||
+          request.resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow update: if inCompany(companyId) &&
+        (
+          isDocumentManager(companyId) ||
+          resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+      allow delete: if isDocumentManager(companyId);
+    }
+
+    match /companies/{companyId}/leave_requests/{requestId} {
+      allow read: if inCompany(companyId);
+      allow create: if inCompany(companyId);
+      allow update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/leave_balances/{balanceId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/leave_types/{leaveTypeId} {
+      allow read: if inCompany(companyId);
+      allow write: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/leave_encashments/{encashmentId} {
+      allow read: if inCompany(companyId);
+      allow create: if inCompany(companyId);
+      allow update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/public_holidays/{holidayId} {
+      allow read: if inCompany(companyId);
+      allow write: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/probation_records/{recordId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/contract_records/{recordId} {
+      allow read: if inCompany(companyId);
+      allow create, update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/exit_requests/{requestId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isAdminOrHR(companyId) ||
+          isAccountant(companyId) ||
+          canViewOwnEmployeeRecord(companyId, resource.data.employeeId)
+        );
+
+      allow create: if inCompany(companyId) &&
+        (
+          isAdminOrHR(companyId) ||
+          request.resource.data.employeeId == getCompanyUserData(companyId).employeeId
+        );
+
+      allow update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/exit_clearance_items/{itemId} {
+      allow read: if inCompany(companyId) &&
+        (
+          isAdminOrHR(companyId) ||
+          isAccountant(companyId) ||
+          canViewOwnEmployeeRecord(
+            companyId,
+            get(
+              /databases/$(database)/documents/companies/$(companyId)/exit_requests/$(resource.data.exitRequestId)
+            ).data.employeeId
+          )
+        );
+      allow create, update: if isAdminOrHR(companyId);
+      allow delete: if isAdmin(companyId);
+    }
+
+    match /companies/{companyId}/notifications/{notificationId} {
+      allow read, update, delete: if inCompany(companyId) &&
+        resource.data.userId == request.auth.uid;
+
+      allow create: if inCompany(companyId) &&
+        (
+          request.resource.data.userId == request.auth.uid ||
+          isAdminOrHR(companyId) ||
+          targetIsAdminOrHR(companyId, request.resource.data.userId)
+        );
+    }
+
+    match /companies/{companyId}/shifts/{shiftId} {
+      allow read: if inCompany(companyId);
+      allow create, update, delete: if isAdminOrHR(companyId);
+    }
+
+    match /mail/{mailId} {
+      allow create: if isSignedIn();
+      allow read, update, delete: if false;
+    }
+  }
+}

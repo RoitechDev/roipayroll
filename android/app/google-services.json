@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "126501481028",
+    "project_id": "roipayroll-72aef",
+    "storage_bucket": "roipayroll-72aef.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:126501481028:android:79133358cb55f79971ea11",
+        "android_client_info": {
+          "package_name": "com.example.roipayroll"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzllJvXnubifLADdn9SCOzJeaDQe26Psc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
