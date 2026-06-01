@@ -7,7 +7,7 @@
       "name": "RoiPayroll (Edge)",
       "request": "launch",
       "type": "dart",
-      "device": "edge",
+      "deviceId": "edge",
       "args": [
         "--dart-define=ROI_ZOHO_CLIENT_ID=1000.XNSIQ0JPL7AWSKE39ZUFBA7IIMPUZH",
         "--dart-define=ROI_ZOHO_CLIENT_SECRET=b0a24ee79cf15f4fba862e967ddd1a730428f24ace",
@@ -18,7 +18,7 @@
       "name": "RoiPayroll (Chrome)",
       "request": "launch",
       "type": "dart",
-      "device": "chrome",
+      "deviceId": "chrome",
       "args": [
         "--dart-define=ROI_ZOHO_CLIENT_ID=1000.XNSIQ0JPL7AWSKE39ZUFBA7IIMPUZH",
         "--dart-define=ROI_ZOHO_CLIENT_SECRET=b0a24ee79cf15f4fba862e967ddd1a730428f24ace",
@@ -29,7 +29,7 @@
       "name": "RoiPayroll (Local Proxy)",
       "request": "launch",
       "type": "dart",
-      "device": "edge",
+      "deviceId": "edge",
       "args": [
         "--dart-define=ROI_ZOHO_CLIENT_ID=1000.XNSIQ0JPL7AWSKE39ZUFBA7IIMPUZH",
         "--dart-define=ROI_ZOHO_CLIENT_SECRET=b0a24ee79cf15f4fba862e967ddd1a730428f24ace",
