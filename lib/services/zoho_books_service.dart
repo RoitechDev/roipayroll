@@ -253,17 +253,18 @@ class ZohoBooksService {
     return {..._authHeaders(token), 'Content-Type': 'application/json'};
   }
 
+  // ── FIXED: uses string concatenation instead of Uri.resolve()
+  // Uri.resolve() was stripping path segments from the base URL.
   Uri _buildUri(String path, {bool includeOrganizationId = true}) {
-    final baseUri = Uri.parse(baseUrl);
-    final resolved = baseUri.resolve(
-      path.startsWith('/') ? path.substring(1) : path,
-    );
+    final base = baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
+    final cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    final fullUrl = '$base$cleanPath';
+    final uri = Uri.parse(fullUrl);
     final queryParameters = <String, String>{
-      ...resolved.queryParameters,
+      ...uri.queryParameters,
       if (includeOrganizationId) 'organization_id': organizationId,
     };
-
-    return resolved.replace(queryParameters: queryParameters);
+    return uri.replace(queryParameters: queryParameters);
   }
 
   Map<String, double> _groupAmounts(

@@ -8,13 +8,16 @@ const helmet = require('helmet');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ── Allowed origins ───────────────────────────────────────────────────────
 const PRODUCTION_ORIGINS = [
   'https://roipayroll-72aef.web.app',
   'https://roipayroll-72aef.firebaseapp.com',
 ];
 
+// ── Security headers ──────────────────────────────────────────────────────
 app.use(helmet());
 
+// ── CORS ──────────────────────────────────────────────────────────────────
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -23,14 +26,16 @@ app.use(
       if (PRODUCTION_ORIGINS.includes(origin)) return callback(null, true);
       return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 
+// ── Body parsers ──────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ── Health check ──────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -39,6 +44,7 @@ app.get('/health', (req, res) => {
   });
 });
 
+// ── Zoho OAuth token exchange ─────────────────────────────────────────────
 app.post('/zoho/token', async (req, res) => {
   const { grant_type, code, redirect_uri, refresh_token } = req.body;
 
@@ -46,7 +52,10 @@ app.post('/zoho/token', async (req, res) => {
     return res.status(400).json({ error: 'grant_type is required' });
   }
 
-  if (grant_type !== 'authorization_code' && grant_type !== 'refresh_token') {
+  if (
+    grant_type !== 'authorization_code' &&
+    grant_type !== 'refresh_token'
+  ) {
     return res.status(400).json({
       error: `Unsupported grant_type: ${grant_type}`,
     });
@@ -54,21 +63,15 @@ app.post('/zoho/token', async (req, res) => {
 
   if (grant_type === 'authorization_code') {
     if (!code) {
-      return res.status(400).json({
-        error: 'code is required for authorization_code grant',
-      });
+      return res.status(400).json({ error: 'code is required for authorization_code grant' });
     }
     if (!redirect_uri) {
-      return res.status(400).json({
-        error: 'redirect_uri is required for authorization_code grant',
-      });
+      return res.status(400).json({ error: 'redirect_uri is required for authorization_code grant' });
     }
   }
 
   if (grant_type === 'refresh_token' && !refresh_token) {
-    return res.status(400).json({
-      error: 'refresh_token is required for refresh_token grant',
-    });
+    return res.status(400).json({ error: 'refresh_token is required for refresh_token grant' });
   }
 
   const clientId = process.env.ZOHO_CLIENT_ID;
@@ -77,7 +80,7 @@ app.post('/zoho/token', async (req, res) => {
   if (!clientId || !clientSecret) {
     console.error('ZOHO_CLIENT_ID or ZOHO_CLIENT_SECRET is not set');
     return res.status(500).json({
-      error: 'Server configuration error - Zoho credentials not configured',
+      error: 'Server configuration error — Zoho credentials not configured',
     });
   }
 
@@ -120,14 +123,12 @@ app.post('/zoho/token', async (req, res) => {
     });
   } catch (error) {
     console.error('Zoho token request error:', error.message);
-
     if (error.response) {
       return res.status(error.response.status).json({
         error: 'Zoho token request failed',
         details: error.response.data,
       });
     }
-
     return res.status(500).json({
       error: 'Failed to reach Zoho accounts server',
       details: error.message,
@@ -135,44 +136,56 @@ app.post('/zoho/token', async (req, res) => {
   }
 });
 
+// ── Zoho Books API proxy ──────────────────────────────────────────────────
+// Forwards all Zoho Books API calls to avoid browser CORS restrictions.
+// Flutter app calls: /zoho/books/journals?organization_id=xxx
+// This proxy forwards to: https://www.zohoapis.com/books/v3/journals?organization_id=xxx
 app.all('/zoho/books/*', async (req, res) => {
   const zohoPath = req.params[0];
   const queryString = new URLSearchParams(req.query).toString();
-  const zohoUrl = `https://www.zohoapis.com/books/v3/${zohoPath}${
-    queryString ? `?${queryString}` : ''
-  }`;
+  const zohoUrl = `https://www.zohoapis.com/books/v3/${zohoPath}${queryString ? '?' + queryString : ''}`;
+
+  console.log(`Proxying ${req.method} ${zohoUrl}`);
 
   try {
     const response = await axios({
       method: req.method,
       url: zohoUrl,
       headers: {
-        Authorization: req.headers.authorization,
+        'Authorization': req.headers['authorization'] || '',
         'Content-Type': req.headers['content-type'] || 'application/json',
       },
-      data: req.method !== 'GET' ? req.body : undefined,
+      data: req.method !== 'GET' && req.method !== 'DELETE'
+        ? req.body
+        : undefined,
       timeout: 15000,
     });
+
     return res.status(response.status).json(response.data);
   } catch (error) {
-    console.error('Zoho Books request error:', error.message);
-
+    console.error(`Zoho Books proxy error for ${zohoUrl}:`, error.message);
     if (error.response) {
       return res.status(error.response.status).json(error.response.data);
     }
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({
+      error: 'Failed to reach Zoho Books API',
+      details: error.message,
+    });
   }
 });
 
+// ── 404 handler ───────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
 });
 
+// ── Global error handler ──────────────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err.message);
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
+// ── Start server ──────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`RoiPayroll Zoho proxy running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
