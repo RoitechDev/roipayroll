@@ -1,0 +1,40 @@
+{
+  // Contains Zoho OAuth run credentials. Keep this file private if the repo is
+  // ever made public.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "RoiPayroll (Edge)",
+      "request": "launch",
+      "type": "dart",
+      "device": "edge",
+      "args": [
+        "--dart-define=ROI_ZOHO_CLIENT_ID=1000.XNSIQ0JPL7AWSKE39ZUFBA7IIMPUZH",
+        "--dart-define=ROI_ZOHO_CLIENT_SECRET=b0a24ee79cf15f4fba862e967ddd1a730428f24ace",
+        "--dart-define=ROI_ZOHO_PROXY_URL=https://roipayroll-zoho-proxy.onrender.com"
+      ]
+    },
+    {
+      "name": "RoiPayroll (Chrome)",
+      "request": "launch",
+      "type": "dart",
+      "device": "chrome",
+      "args": [
+        "--dart-define=ROI_ZOHO_CLIENT_ID=1000.XNSIQ0JPL7AWSKE39ZUFBA7IIMPUZH",
+        "--dart-define=ROI_ZOHO_CLIENT_SECRET=b0a24ee79cf15f4fba862e967ddd1a730428f24ace",
+        "--dart-define=ROI_ZOHO_PROXY_URL=https://roipayroll-zoho-proxy.onrender.com"
+      ]
+    },
+    {
+      "name": "RoiPayroll (Local Proxy)",
+      "request": "launch",
+      "type": "dart",
+      "device": "edge",
+      "args": [
+        "--dart-define=ROI_ZOHO_CLIENT_ID=1000.XNSIQ0JPL7AWSKE39ZUFBA7IIMPUZH",
+        "--dart-define=ROI_ZOHO_CLIENT_SECRET=b0a24ee79cf15f4fba862e967ddd1a730428f24ace",
+        "--dart-define=ROI_ZOHO_PROXY_URL=http://localhost:3000"
+      ]
+    }
+  ]
+}

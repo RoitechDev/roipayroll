@@ -23,6 +23,12 @@ migrate_working_dir/
 # is commented out by default.
 #.vscode/
 
+# VS Code
+.vscode/settings.json
+
+# Keep launch.json in git so team members get the same run config
+# .vscode/launch.json  <- intentionally NOT ignored
+
 # Flutter/Dart/Pub related
 **/doc/api/
 **/ios/Flutter/.last_build_id
