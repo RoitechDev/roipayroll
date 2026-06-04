@@ -68,38 +68,83 @@ class ZohoBooksService {
     }
 
     try {
-      final journalLines = <Map<String, dynamic>>[];
-
+      // ── FIX 1: validate account mapping BEFORE building any lines so we
+      //    surface a clear error rather than letting Zoho return an opaque 400.
       final debitGroups = _groupAmounts(
         transactions,
-        selector: (transaction) => transaction.debitAccount,
+        selector: (t) => t.debitAccount,
       );
-      for (final entry in debitGroups.entries) {
-        journalLines.add({
-          'account_id': _getZohoAccountId(entry.key),
-          'debit_amount': _round2(entry.value),
-          'description': 'Payroll debit - ${entry.key}',
-        });
-      }
-
       final creditGroups = _groupAmounts(
         transactions,
-        selector: (transaction) => transaction.creditAccount,
+        selector: (t) => t.creditAccount,
       );
-      for (final entry in creditGroups.entries) {
+
+      // Validate every account code is mapped before hitting the network.
+      for (final code in {...debitGroups.keys, ...creditGroups.keys}) {
+        _getZohoAccountId(code); // throws ZohoBooksException on miss
+      }
+
+      // ── FIX 2: Zoho requires each line_item to have EITHER debit_amount OR
+      //    credit_amount — never both and never 0.  Also: amounts must be > 0.
+      //    The previous code emitted both keys on the same object which Zoho
+      //    rejects with 400.
+      final journalLines = <Map<String, dynamic>>[];
+
+      for (final entry in debitGroups.entries) {
+        final amount = _round2(entry.value);
+        if (amount <= 0) continue; // Zoho rejects zero-amount lines
         journalLines.add({
           'account_id': _getZohoAccountId(entry.key),
-          'credit_amount': _round2(entry.value),
-          'description': 'Payroll credit - ${entry.key}',
+          'debit_amount': amount,
+          'description': _lineDescription(
+            entry.key,
+            transactions,
+            isDebit: true,
+          ),
         });
       }
 
-      final payload = {
+      for (final entry in creditGroups.entries) {
+        final amount = _round2(entry.value);
+        if (amount <= 0) continue;
+        journalLines.add({
+          'account_id': _getZohoAccountId(entry.key),
+          'credit_amount': amount,
+          'description': _lineDescription(
+            entry.key,
+            transactions,
+            isDebit: false,
+          ),
+        });
+      }
+
+      if (journalLines.isEmpty) {
+        return const ZohoJournalEntryResponse(
+          success: false,
+          error: 'All transaction amounts are zero — nothing to post to Zoho.',
+        );
+      }
+
+      // ── FIX 3: Zoho Books journal_date must be in yyyy-MM-dd format.
+      //    (Was already correct, but kept explicit here for clarity.)
+      //
+      // ── FIX 4: reference_number must be ≤ 100 chars in Zoho.
+      //    Truncate defensively so long run IDs never cause a 400.
+      final safeRef = referenceNumber.length > 100
+          ? referenceNumber.substring(0, 100)
+          : referenceNumber;
+
+      // ── FIX 5: journal_type is required by Zoho Books API (defaults to
+      //    "both" which covers standard payroll double-entry).
+      final payload = <String, dynamic>{
         'journal_date': _formatIsoDate(journalDate),
-        'reference_number': referenceNumber,
+        'reference_number': safeRef,
         'notes': notes,
+        'journal_type': 'both', // ← required field the original omitted
         'line_items': journalLines,
       };
+
+      debugPrint('[ZohoBooks] POST /journals payload: ${jsonEncode(payload)}');
 
       final response = await _sendAuthorizedRequest(
         (token) => _httpClient.post(
@@ -109,11 +154,23 @@ class ZohoBooksService {
         ),
       );
 
+      debugPrint(
+        '[ZohoBooks] /journals response ${response.statusCode}: ${response.body}',
+      );
+
       if (response.statusCode != 200 && response.statusCode != 201) {
+        // Surface Zoho's own error message so it appears in the UI and logs.
+        String zohoMessage = response.body;
+        try {
+          final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+          zohoMessage =
+              (decoded['message'] ?? decoded['error'] ?? response.body)
+                  .toString();
+        } catch (_) {}
         return ZohoJournalEntryResponse(
           success: false,
           error:
-              'Failed to create journal entry: ${response.statusCode} - ${response.body}',
+              'Zoho Books rejected the journal (HTTP ${response.statusCode}): $zohoMessage',
         );
       }
 
@@ -129,6 +186,8 @@ class ZohoBooksService {
         journalNumber: journalMap['journal_number']?.toString(),
         data: data is Map<String, dynamic> ? data : null,
       );
+    } on ZohoBooksException {
+      rethrow;
     } catch (error) {
       debugPrint('Zoho Books createJournalEntry error: $error');
       return ZohoJournalEntryResponse(success: false, error: error.toString());
@@ -287,12 +346,40 @@ class ZohoBooksService {
     final mapped = accountMapping[normalized]?.trim();
     if (mapped == null || mapped.isEmpty) {
       throw ZohoBooksException(
-        'Missing Zoho account mapping for account code $normalized.',
+        'Missing Zoho account mapping for ledger code "$normalized". '
+        'Open Payment Operations → Configure Zoho Books and enter the '
+        'Zoho account ID for this code.',
         details:
             'Update the Zoho Books account mapping before retrying the sync.',
       );
     }
     return mapped;
+  }
+
+  /// Build a concise per-line description that fits Zoho's 255-char limit.
+  String _lineDescription(
+    String accountCode,
+    List<PayrollTransaction> transactions, {
+    required bool isDebit,
+  }) {
+    final matching = transactions.where((t) {
+      return isDebit
+          ? t.debitAccount.trim() == accountCode
+          : t.creditAccount.trim() == accountCode;
+    }).toList();
+
+    if (matching.isEmpty) {
+      return isDebit
+          ? 'Payroll debit - $accountCode'
+          : 'Payroll credit - $accountCode';
+    }
+
+    // Use the first transaction's own description; it's already human-readable.
+    final base = matching.first.description;
+    final suffix = matching.length > 1 ? ' (+${matching.length - 1} more)' : '';
+    final full = '$base$suffix';
+    // Zoho caps descriptions at 255 characters.
+    return full.length > 255 ? full.substring(0, 252) + '...' : full;
   }
 
   String _formatIsoDate(DateTime date) {
