@@ -51,6 +51,10 @@ class ZohoBooksService {
         normalized == _directZohoBooksBaseUrl) {
       return _proxyBooksBaseUrl;
     }
+    // If the caller saved the bare proxy root (without /zoho/books), append it.
+    if (normalized == _proxyBaseUrl || normalized == '$_proxyBaseUrl/') {
+      return _proxyBooksBaseUrl;
+    }
     return normalized;
   }
 
@@ -68,8 +72,7 @@ class ZohoBooksService {
     }
 
     try {
-      // ── FIX 1: validate account mapping BEFORE building any lines so we
-      //    surface a clear error rather than letting Zoho return an opaque 400.
+      // Group raw amounts by account code for each side of the journal.
       final debitGroups = _groupAmounts(
         transactions,
         selector: (t) => t.debitAccount,
@@ -79,20 +82,52 @@ class ZohoBooksService {
         selector: (t) => t.creditAccount,
       );
 
-      // Validate every account code is mapped before hitting the network.
+      // ── FIX: Net out accounts that appear on both sides.
+      //
+      // Zoho returns {"code":4,"message":"Invalid value passed for Amount"}
+      // when the same account_id appears as both a debit line and a credit
+      // line in the same journal. This happens legitimately for Employee
+      // Payable (2100), which is debited by deduction entries (PAYE, pension,
+      // NHF) and credited by the salary accrual entry in the same run.
+      //
+      // Solution: compute the net position for every account that appears on
+      // both sides and emit a single line in the direction of the net. Accounts
+      // that appear on only one side are unchanged.
+      final allCodes = {...debitGroups.keys, ...creditGroups.keys};
+      for (final code in allCodes) {
+        final debit = debitGroups[code] ?? 0.0;
+        final credit = creditGroups[code] ?? 0.0;
+        if (debit > 0 && credit > 0) {
+          final net = _round2(debit - credit);
+          if (net > 0) {
+            // Net debit position — keep as debit, remove from credits.
+            debitGroups[code] = net;
+            creditGroups.remove(code);
+          } else if (net < 0) {
+            // Net credit position — keep as credit, remove from debits.
+            creditGroups[code] = -net;
+            debitGroups.remove(code);
+          } else {
+            // Perfectly balanced — net is zero, drop both sides entirely.
+            debitGroups.remove(code);
+            creditGroups.remove(code);
+          }
+        }
+      }
+
+      // Validate every remaining account code is mapped before hitting the
+      // network, so we surface a clear error instead of an opaque Zoho 400.
       for (final code in {...debitGroups.keys, ...creditGroups.keys}) {
         _getZohoAccountId(code); // throws ZohoBooksException on miss
       }
 
-      // ── FIX 2: Zoho requires each line_item to have EITHER debit_amount OR
-      //    credit_amount — never both and never 0.  Also: amounts must be > 0.
-      //    The previous code emitted both keys on the same object which Zoho
-      //    rejects with 400.
+      // Build line items. Each line has EITHER debit_amount OR credit_amount —
+      // never both, never zero. Zoho is strict about this.
       final journalLines = <Map<String, dynamic>>[];
 
       for (final entry in debitGroups.entries) {
         final amount = _round2(entry.value);
-        if (amount <= 0) continue; // Zoho rejects zero-amount lines
+        if (amount <= 0) continue;
         journalLines.add({
           'account_id': _getZohoAccountId(entry.key),
           'debit_amount': amount,
@@ -125,22 +160,16 @@ class ZohoBooksService {
         );
       }
 
-      // ── FIX 3: Zoho Books journal_date must be in yyyy-MM-dd format.
-      //    (Was already correct, but kept explicit here for clarity.)
-      //
-      // ── FIX 4: reference_number must be ≤ 100 chars in Zoho.
-      //    Truncate defensively so long run IDs never cause a 400.
+      // Truncate reference_number to Zoho's 100-char limit.
       final safeRef = referenceNumber.length > 100
           ? referenceNumber.substring(0, 100)
           : referenceNumber;
 
-      // ── FIX 5: journal_type is required by Zoho Books API (defaults to
-      //    "both" which covers standard payroll double-entry).
       final payload = <String, dynamic>{
         'journal_date': _formatIsoDate(journalDate),
         'reference_number': safeRef,
         'notes': notes,
-        'journal_type': 'both', // ← required field the original omitted
+        'journal_type': 'both',
         'line_items': journalLines,
       };
 
@@ -159,7 +188,6 @@ class ZohoBooksService {
       );
 
       if (response.statusCode != 200 && response.statusCode != 201) {
-        // Surface Zoho's own error message so it appears in the UI and logs.
         String zohoMessage = response.body;
         try {
           final decoded = jsonDecode(response.body) as Map<String, dynamic>;
@@ -170,7 +198,8 @@ class ZohoBooksService {
         return ZohoJournalEntryResponse(
           success: false,
           error:
-              'Zoho Books rejected the journal (HTTP ${response.statusCode}): $zohoMessage',
+              'Zoho Books rejected the journal '
+              '(HTTP ${response.statusCode}): $zohoMessage',
         );
       }
 
@@ -251,10 +280,7 @@ class ZohoBooksService {
   }
 
   Future<void> _ensureValidToken() async {
-    if (_tokenExpiresAt == null) {
-      return;
-    }
-
+    if (_tokenExpiresAt == null) return;
     final refreshAt = _tokenExpiresAt!.subtract(_tokenRefreshBuffer);
     if (DateTime.now().isAfter(refreshAt)) {
       await _refreshToken();
@@ -268,7 +294,8 @@ class ZohoBooksService {
           (_tokenExpiresAt != null &&
               DateTime.now().isAfter(_tokenExpiresAt!))) {
         throw const ZohoBooksException(
-          'Zoho access token has expired and no refresh token is configured. Please reconnect Zoho Books.',
+          'Zoho access token has expired and no refresh token is configured. '
+          'Please reconnect Zoho Books.',
         );
       }
       return;
@@ -294,31 +321,29 @@ class ZohoBooksService {
   }
 
   bool _isAuthenticationFailure(http.Response response) {
-    if (response.statusCode == 401) {
-      return true;
-    }
-
+    if (response.statusCode == 401) return true;
     final body = response.body.toLowerCase();
     return body.contains('invalid_oauthtoken') ||
         body.contains('token expired') ||
         body.contains('invalid oauth token');
   }
 
-  Map<String, String> _authHeaders(String token) {
-    return {'Authorization': 'Zoho-oauthtoken $token'};
-  }
+  Map<String, String> _authHeaders(String token) => {
+    'Authorization': 'Zoho-oauthtoken $token',
+  };
 
-  Map<String, String> _jsonHeaders(String token) {
-    return {..._authHeaders(token), 'Content-Type': 'application/json'};
-  }
+  Map<String, String> _jsonHeaders(String token) => {
+    ..._authHeaders(token),
+    'Content-Type': 'application/json',
+  };
 
-  // ── FIXED: uses string concatenation instead of Uri.resolve()
-  // Uri.resolve() was stripping path segments from the base URL.
+  /// Builds the request URI by appending [path] to [baseUrl] and injecting
+  /// the organisation_id query parameter. Uses string concatenation instead of
+  /// Uri.resolve() to avoid path-segment stripping.
   Uri _buildUri(String path, {bool includeOrganizationId = true}) {
     final base = baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
     final cleanPath = path.startsWith('/') ? path.substring(1) : path;
-    final fullUrl = '$base$cleanPath';
-    final uri = Uri.parse(fullUrl);
+    final uri = Uri.parse('$base$cleanPath');
     final queryParameters = <String, String>{
       ...uri.queryParameters,
       if (includeOrganizationId) 'organization_id': organizationId,
@@ -326,6 +351,8 @@ class ZohoBooksService {
     return uri.replace(queryParameters: queryParameters);
   }
 
+  /// Sums [amountBase] for all transactions grouped by the account code
+  /// returned by [selector].
   Map<String, double> _groupAmounts(
     List<PayrollTransaction> transactions, {
     required String Function(PayrollTransaction transaction) selector,
@@ -333,14 +360,14 @@ class ZohoBooksService {
     final groups = <String, double>{};
     for (final transaction in transactions) {
       final key = selector(transaction).trim();
-      if (key.isEmpty) {
-        continue;
-      }
+      if (key.isEmpty) continue;
       groups[key] = (groups[key] ?? 0.0) + transaction.amountBase;
     }
     return groups;
   }
 
+  /// Looks up the Zoho account ID for [accountCode] in the configured mapping.
+  /// Throws [ZohoBooksException] if the code is not mapped.
   String _getZohoAccountId(String accountCode) {
     final normalized = accountCode.trim();
     final mapped = accountMapping[normalized]?.trim();
@@ -356,7 +383,8 @@ class ZohoBooksService {
     return mapped;
   }
 
-  /// Build a concise per-line description that fits Zoho's 255-char limit.
+  /// Returns a human-readable description for a journal line, capped at
+  /// Zoho's 255-character limit.
   String _lineDescription(
     String accountCode,
     List<PayrollTransaction> transactions, {
@@ -374,12 +402,10 @@ class ZohoBooksService {
           : 'Payroll credit - $accountCode';
     }
 
-    // Use the first transaction's own description; it's already human-readable.
     final base = matching.first.description;
     final suffix = matching.length > 1 ? ' (+${matching.length - 1} more)' : '';
     final full = '$base$suffix';
-    // Zoho caps descriptions at 255 characters.
-    return full.length > 255 ? full.substring(0, 252) + '...' : full;
+    return full.length > 255 ? '${full.substring(0, 252)}...' : full;
   }
 
   String _formatIsoDate(DateTime date) {
@@ -388,10 +414,12 @@ class ZohoBooksService {
     return '${date.year}-$month-$day';
   }
 
-  double _round2(double value) {
-    return double.parse(value.toStringAsFixed(2));
-  }
+  // Zoho Books rejects fractional amounts for NGN (which has no sub-unit).
+  // Round to the nearest whole number before sending any line item amount.
+  double _round2(double value) => value.roundToDouble();
 }
+
+// ── Response types ────────────────────────────────────────────────────────────
 
 class ZohoJournalEntryResponse {
   final bool success;
