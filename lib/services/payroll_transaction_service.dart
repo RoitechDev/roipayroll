@@ -306,11 +306,12 @@ class PayrollTransactionService extends BaseService {
     final transactionsRef = await companyCollection(collectionName);
     final snapshot = await transactionsRef
         .where('payrollId', isEqualTo: payrollId)
-        .orderBy('createdAt')
         .get();
-    return snapshot.docs
+    final transactions = snapshot.docs
         .map((doc) => PayrollTransaction.fromJson(docData(doc)))
         .toList();
+    transactions.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return transactions;
   }
 
   Future<List<PayrollTransaction>> getTransactionsByPayrollRun(
@@ -319,11 +320,12 @@ class PayrollTransactionService extends BaseService {
     final transactionsRef = await companyCollection(collectionName);
     final snapshot = await transactionsRef
         .where('payrollRunId', isEqualTo: payrollRunId)
-        .orderBy('createdAt')
         .get();
-    return snapshot.docs
+    final transactions = snapshot.docs
         .map((doc) => PayrollTransaction.fromJson(docData(doc)))
         .toList();
+    transactions.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return transactions;
   }
 
   Future<List<PayrollTransaction>> getTransactionsForPeriod({

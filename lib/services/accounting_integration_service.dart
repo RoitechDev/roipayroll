@@ -172,7 +172,9 @@ class AccountingIntegrationService extends BaseService {
     if (transactions.isEmpty) {
       return const ZohoJournalEntryResponse(
         success: false,
-        error: 'No payroll transactions found for the requested payroll run.',
+        error:
+            'No financial transactions exist for this payroll run yet. '
+            'Process or approve at least one eligible payroll in this run before syncing to Zoho.',
       );
     }
 

@@ -25,6 +25,15 @@ class UserService {
     final normalizedUid = uid.trim();
     if (normalizedUid.isEmpty) return null;
 
+    final normalizedEmail = email?.trim();
+    final byCompanyScan = await _findUserDocByDirectCompanyScan(
+      normalizedUid,
+      normalizedEmail,
+    );
+    if (byCompanyScan != null) {
+      return byCompanyScan;
+    }
+
     try {
       final byStoredId = await _firestore
           .collectionGroup('users')
@@ -35,7 +44,9 @@ class UserService {
         return byStoredId.docs.first;
       }
     } catch (e) {
-      debugPrint('User lookup by stored id failed: $e');
+      debugPrint(
+        'User collection-group fallback unavailable (using direct scan): $e',
+      );
     }
 
     try {
@@ -48,10 +59,11 @@ class UserService {
         return byDocumentId.docs.first;
       }
     } catch (e) {
-      debugPrint('User lookup by document id failed: $e');
+      debugPrint(
+        'User collection-group fallback unavailable (using direct scan): $e',
+      );
     }
 
-    final normalizedEmail = email?.trim();
     if (normalizedEmail != null && normalizedEmail.isNotEmpty) {
       try {
         final byEmail = await _firestore
@@ -63,16 +75,10 @@ class UserService {
           return byEmail.docs.first;
         }
       } catch (e) {
-        debugPrint('User lookup by email failed: $e');
+        debugPrint(
+          'User collection-group fallback unavailable (using direct scan): $e',
+        );
       }
-    }
-
-    final byCompanyScan = await _findUserDocByDirectCompanyScan(
-      normalizedUid,
-      normalizedEmail,
-    );
-    if (byCompanyScan != null) {
-      return byCompanyScan;
     }
 
     return null;
