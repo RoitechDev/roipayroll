@@ -121,8 +121,8 @@ class ZohoBooksService {
         _getZohoAccountId(code); // throws ZohoBooksException on miss
       }
 
-      // Build line items. Each line has EITHER debit_amount OR credit_amount —
-      // never both, never zero. Zoho is strict about this.
+      // Build line items using amount + debit_or_credit schema.
+      // Zoho Books v3 rejects debit_amount/credit_amount keys — use amount + debit_or_credit instead.
       final journalLines = <Map<String, dynamic>>[];
 
       for (final entry in debitGroups.entries) {
@@ -130,7 +130,8 @@ class ZohoBooksService {
         if (amount <= 0) continue;
         journalLines.add({
           'account_id': _getZohoAccountId(entry.key),
-          'debit_amount': amount,
+          'amount': amount,
+          'debit_or_credit': 'debit',
           'description': _lineDescription(
             entry.key,
             transactions,
@@ -144,7 +145,8 @@ class ZohoBooksService {
         if (amount <= 0) continue;
         journalLines.add({
           'account_id': _getZohoAccountId(entry.key),
-          'credit_amount': amount,
+          'amount': amount,
+          'debit_or_credit': 'credit',
           'description': _lineDescription(
             entry.key,
             transactions,
