@@ -98,7 +98,7 @@ class ZohoBooksService {
         final debit = debitGroups[code] ?? 0.0;
         final credit = creditGroups[code] ?? 0.0;
         if (debit > 0 && credit > 0) {
-          final net = _round2(debit - credit);
+          final net = debit - credit;
           if (net > 0) {
             // Net debit position — keep as debit, remove from credits.
             debitGroups[code] = net;
@@ -416,7 +416,9 @@ class ZohoBooksService {
 
   // Zoho Books rejects fractional amounts for NGN (which has no sub-unit).
   // Round to the nearest whole number before sending any line item amount.
-  double _round2(double value) => value.roundToDouble();
+  // Returns a whole-number int so jsonEncode emits 50000, not 50000.0.
+  // Zoho Books rejects float-typed amounts for NGN.
+  int _round2(double value) => value.round();
 }
 
 // ── Response types ────────────────────────────────────────────────────────────
