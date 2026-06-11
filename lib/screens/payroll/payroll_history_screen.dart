@@ -10,6 +10,7 @@ import 'package:roipayroll/models/user_model.dart';
 import 'package:roipayroll/providers/auth_provider.dart';
 import 'package:roipayroll/providers/app_refresh_provider.dart';
 import 'package:roipayroll/providers/payroll_provider.dart';
+import 'package:roipayroll/services/permission_service.dart';
 import 'package:roipayroll/screens/accounting/transaction_list_screen.dart';
 import 'package:roipayroll/services/payroll_service.dart';
 import 'package:roipayroll/services/pdf_service.dart';
@@ -30,6 +31,7 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
   int _selectedYear = DateTime.now().year;
   PayrollType? _selectedPayrollType;
   bool _isLocking = false;
+  bool _isApprovingAll = false;
 
   @override
   Widget build(BuildContext context) {
@@ -60,7 +62,7 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
       ),
       body: Column(
         children: [
-          _buildResponsiveFilters(),
+          _buildResponsiveFilters(currentUser),
           if (isMonthLocked)
             Container(
               width: double.infinity,
@@ -121,15 +123,15 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
     );
   }
 
-  Widget _buildResponsiveFilters() {
+  Widget _buildResponsiveFilters(AppUser? currentUser) {
     return ResponsiveLayout(
-      mobile: _buildFilters(mobile: true),
-      tablet: _buildFilters(mobile: false),
-      desktop: _buildFilters(mobile: false),
+      mobile: _buildFilters(mobile: true, currentUser: currentUser),
+      tablet: _buildFilters(mobile: false, currentUser: currentUser),
+      desktop: _buildFilters(mobile: false, currentUser: currentUser),
     );
   }
 
-  Widget _buildFilters({required bool mobile}) {
+  Widget _buildFilters({required bool mobile, required AppUser? currentUser}) {
     final monthField = DropdownButtonFormField<int>(
       initialValue: _selectedMonth,
       decoration: const InputDecoration(labelText: 'Month'),
@@ -175,6 +177,26 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
         setState(() => _selectedPayrollType = value);
       },
     );
+    final canApproveAll =
+        currentUser != null &&
+        PermissionService.hasPermission(currentUser, Permission.approvePayroll);
+    final approveAllButton = ElevatedButton.icon(
+      onPressed: !canApproveAll || _isApprovingAll
+          ? null
+          : () => _approveAllPayrolls(currentUser),
+      icon: _isApprovingAll
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.done_all_outlined),
+      label: Text(
+        _isApprovingAll
+            ? 'Approving...'
+            : 'Approve All (${_getMonthName(_selectedMonth)} $_selectedYear)',
+      ),
+    );
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -186,6 +208,10 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
                 yearField,
                 const SizedBox(height: 12),
                 payrollTypeField,
+                if (canApproveAll) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(width: double.infinity, child: approveAllButton),
+                ],
               ],
             )
           : Row(
@@ -195,6 +221,10 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
                 Expanded(child: yearField),
                 const SizedBox(width: 16),
                 Expanded(child: payrollTypeField),
+                if (canApproveAll) ...[
+                  const SizedBox(width: 16),
+                  approveAllButton,
+                ],
               ],
             ),
     );
@@ -861,6 +891,100 @@ class _PayrollHistoryScreenState extends ConsumerState<PayrollHistoryScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text('Approval failed: $e')));
     }
+  }
+
+  Future<void> _approveAllPayrolls(AppUser currentUser) async {
+    final monthLabel = _getMonthName(_selectedMonth);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Approve All Payrolls'),
+          content: Text(
+            'Approve all eligible payrolls for $monthLabel $_selectedYear? '
+            'This will generate accounting entries and cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Approve All'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isApprovingAll = true);
+    try {
+      final result = await _payrollService.fastTrackApproveMonth(
+        month: _selectedMonth,
+        year: _selectedYear,
+        approverId: currentUser.id,
+      );
+      if (!mounted) return;
+
+      final period = PayrollPeriod(month: _selectedMonth, year: _selectedYear);
+      ref.invalidate(payrollHistoryProvider(period));
+      ref
+          .read(appManualRefreshControllerProvider)
+          .add(DateTime.now().millisecondsSinceEpoch);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Approved ${result.approved}, skipped ${result.skipped}, failed ${result.failed}.',
+          ),
+          action: result.failed > 0
+              ? SnackBarAction(
+                  label: 'Details',
+                  onPressed: () => _showBulkApprovalErrors(result.errors),
+                )
+              : null,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Approve all failed: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _isApprovingAll = false);
+      }
+    }
+  }
+
+  Future<void> _showBulkApprovalErrors(List<String> errors) async {
+    if (errors.isEmpty) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Approve All Failures'),
+          content: SizedBox(
+            width: 520,
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: errors.length,
+              separatorBuilder: (_, _) => const Divider(height: 16),
+              itemBuilder: (context, index) => Text(errors[index]),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _rejectPayroll(Payroll payroll, AppUser user) async {

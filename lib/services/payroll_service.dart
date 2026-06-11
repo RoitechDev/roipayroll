@@ -1897,6 +1897,111 @@ class PayrollService extends BaseService {
     });
   }
 
+  /// Fast-tracks a single payroll straight to `approved` for an authorized
+  /// approver (admin or accountant). Generates the financial transactions
+  /// needed for accounting/Zoho sync. Skips payrolls that are already
+  /// approved/processed/paid/reversed or locked.
+  Future<bool> fastTrackApprovePayroll(
+    String payrollId,
+    String approverId,
+  ) async {
+    final payroll = await getPayrollById(payrollId);
+    if (payroll == null) {
+      throw Exception('Payroll not found.');
+    }
+    final normalizedStatus = payroll.status.trim().toLowerCase();
+    if (payroll.isLocked ||
+        payroll.isReversal ||
+        payroll.isReversed ||
+        normalizedStatus == 'reversed' ||
+        normalizedStatus == 'paid' ||
+        normalizedStatus == 'processed' ||
+        payroll.approvalStatus == PayrollApprovalStatus.approved ||
+        payroll.approvalStatus == PayrollApprovalStatus.processed) {
+      return false;
+    }
+
+    final approver = await _getUserById(approverId);
+    if (approver == null) {
+      throw Exception('Approver profile not found.');
+    }
+    if (approver.role != UserRole.admin &&
+        approver.role != UserRole.accountant) {
+      throw Exception(
+        'Only admin or accountant can fast-track payroll approval.',
+      );
+    }
+
+    final approvalEntry = PayrollApproval(
+      payrollId: payrollId,
+      status: PayrollApprovalStatus.approved,
+      reviewedBy: approver.id,
+      reviewedAt: DateTime.now(),
+      comments:
+          'Fast-tracked to approved by ${approver.role.name.toUpperCase()} (${approver.name})',
+    );
+
+    final payrollsRef = await companyCollection(_collection);
+    await payrollsRef.doc(payrollId).update({
+      'approvalStatus': PayrollApprovalStatus.approved.name,
+      'approvalHistory': FieldValue.arrayUnion([approvalEntry.toJson()]),
+      'status': 'approved',
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    await _generateFinancialTransactions(
+      payroll: payroll,
+      payrollRunId: _resolvePayrollRunId(payroll.id),
+    );
+
+    await _auditService.logAction(
+      action: AuditAction.payrollProcessed,
+      entityType: 'payroll',
+      entityId: payrollId,
+      entityName: payroll.employeeName,
+    );
+
+    return true;
+  }
+
+  /// Fast-tracks every eligible payroll for the given month/year to `approved`.
+  /// Returns counts of approved vs skipped. Continues past individual failures.
+  Future<BulkApprovalResult> fastTrackApproveMonth({
+    required int month,
+    required int year,
+    required String approverId,
+  }) async {
+    final payrolls = await getPayrollsByMonth(month, year);
+    var approved = 0;
+    var skipped = 0;
+    var failed = 0;
+    final errors = <String>[];
+
+    for (final payroll in payrolls) {
+      try {
+        final didApprove = await fastTrackApprovePayroll(
+          payroll.id,
+          approverId,
+        );
+        if (didApprove) {
+          approved++;
+        } else {
+          skipped++;
+        }
+      } catch (e) {
+        failed++;
+        errors.add('${payroll.employeeName}: $e');
+      }
+    }
+
+    return BulkApprovalResult(
+      approved: approved,
+      skipped: skipped,
+      failed: failed,
+      errors: errors,
+    );
+  }
+
   Future<void> rejectPayroll(
     String payrollId,
     String approverId,
@@ -2609,6 +2714,22 @@ class PayrollProcessingFailure {
     required this.employeeName,
     required this.message,
   });
+}
+
+class BulkApprovalResult {
+  final int approved;
+  final int skipped;
+  final int failed;
+  final List<String> errors;
+
+  const BulkApprovalResult({
+    required this.approved,
+    required this.skipped,
+    required this.failed,
+    this.errors = const [],
+  });
+
+  int get total => approved + skipped + failed;
 }
 
 class _PayrollCalcCacheEntry {

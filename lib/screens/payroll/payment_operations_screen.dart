@@ -11,14 +11,18 @@ import 'package:roipayroll/models/payment_batch_model.dart';
 import 'package:roipayroll/models/payment_orchestration_model.dart';
 import 'package:roipayroll/models/payroll_model.dart';
 import 'package:roipayroll/models/payroll_transaction_model.dart';
+import 'package:roipayroll/models/user_model.dart';
 import 'package:roipayroll/models/zoho_sync_config_model.dart';
 import 'package:roipayroll/providers/app_refresh_provider.dart';
+import 'package:roipayroll/providers/auth_provider.dart';
 import 'package:roipayroll/providers/payment_operations_provider.dart';
 import 'package:roipayroll/providers/payroll_provider.dart';
 import 'package:roipayroll/services/deduction_payout_service.dart';
 import 'package:roipayroll/services/payment_orchestration_service.dart';
 import 'package:roipayroll/services/payment_processing_service.dart';
+import 'package:roipayroll/services/payroll_service.dart';
 import 'package:roipayroll/services/payroll_transaction_service.dart';
+import 'package:roipayroll/services/permission_service.dart';
 import 'package:roipayroll/services/zoho_books_service.dart';
 import 'package:roipayroll/services/zoho_oauth_service.dart';
 import 'package:roipayroll/widgets/common/responsive_layout.dart';
@@ -41,6 +45,7 @@ class _PaymentOperationsScreenState
   final _deductionPayoutService = DeductionPayoutService();
   final _orchestrationService = PaymentOrchestrationService();
   final _paymentProcessingService = PaymentProcessingService();
+  final _payrollService = PayrollService();
   final _payrollTransactionService = PayrollTransactionService();
   int _selectedMonth = DateTime.now().month;
   int _selectedYear = DateTime.now().year;
@@ -53,11 +58,16 @@ class _PaymentOperationsScreenState
   String? _togglingRecipientId;
   bool _savingRecipient = false;
   bool _savingZohoConfig = false;
+  bool _isSyncingAll = false;
+  bool _isApprovingAll = false;
+  int _syncSuccessCount = 0;
+  int _syncFailCount = 0;
 
   @override
   Widget build(BuildContext context) {
     final period = PayrollPeriod(month: _selectedMonth, year: _selectedYear);
     final summaryAsync = ref.watch(paymentOperationsProvider(period));
+    final currentUser = ref.watch(currentUserProvider).asData?.value;
 
     return AppScaffold(
       topBar: AppBar(
@@ -84,7 +94,7 @@ class _PaymentOperationsScreenState
                 onRetry: () =>
                     ref.invalidate(paymentOperationsProvider(period)),
               ),
-              data: (summary) => _buildContent(summary),
+              data: (summary) => _buildContent(summary, currentUser),
             ),
           ),
         ],
@@ -135,7 +145,7 @@ class _PaymentOperationsScreenState
     );
   }
 
-  Widget _buildContent(PaymentOperationsSummary summary) {
+  Widget _buildContent(PaymentOperationsSummary summary, AppUser? currentUser) {
     final runMap = {
       for (final run in summary.orchestrationRuns) run.payrollRunId: run,
     };
@@ -146,6 +156,9 @@ class _PaymentOperationsScreenState
       for (final batch in summary.deductionBatches) batch.id: batch,
     };
     final zohoConfigured = summary.zohoConfig?.isReadyForSync == true;
+    final canApprovePayroll =
+        currentUser != null &&
+        PermissionService.hasPermission(currentUser, Permission.approvePayroll);
     final unreconciledCount = summary.reconciliationRows
         .where((row) => !row.isFullyReconciled)
         .length;
@@ -208,6 +221,8 @@ class _PaymentOperationsScreenState
           runMap,
           activeRecipients,
           zohoConfigured,
+          canApprovePayroll,
+          currentUser,
         ),
         const SizedBox(height: 16),
         _buildReconciliationSection(summary.reconciliationRows),
@@ -637,6 +652,8 @@ class _PaymentOperationsScreenState
     Map<String, PaymentOrchestrationRun> runMap,
     List<PayoutRecipientConfig> recipients,
     bool zohoConfigured,
+    bool canApprovePayroll,
+    AppUser? currentUser,
   ) {
     return Card(
       child: Padding(
@@ -644,9 +661,59 @@ class _PaymentOperationsScreenState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Payroll Runs',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Payroll Runs',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    if (canApprovePayroll && currentUser != null)
+                      OutlinedButton.icon(
+                        onPressed: _isApprovingAll
+                            ? null
+                            : () => _approveAllPendingPayrolls(currentUser),
+                        icon: _isApprovingAll
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.done_all_outlined, size: 16),
+                        label: Text(
+                          _isApprovingAll
+                              ? 'Approving...'
+                              : 'Approve All Pending',
+                        ),
+                      ),
+                    if (zohoConfigured)
+                      ElevatedButton.icon(
+                        onPressed: _isSyncingAll
+                            ? null
+                            : () => _syncAllToZoho(runCandidates),
+                        icon: _isSyncingAll
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.sync, size: 16),
+                        label: Text(
+                          _isSyncingAll ? 'Syncing...' : 'Sync All to Zoho',
+                        ),
+                      ),
+                  ],
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             const Text(
@@ -688,7 +755,12 @@ class _PaymentOperationsScreenState
     final isDeductionRunning = _deductionRunId == candidate.payrollRunId;
     final isZohoRunning = _syncingZohoRunId == candidate.payrollRunId;
     final hasAnyStepRunning =
-        isRunning || isSalaryRunning || isDeductionRunning || isZohoRunning;
+        isRunning ||
+        isSalaryRunning ||
+        isDeductionRunning ||
+        isZohoRunning ||
+        _isSyncingAll ||
+        _isApprovingAll;
     final canRun = candidate.hasEligiblePayrolls && !hasAnyStepRunning;
     final canRunDeductions =
         (orchestration?.salaryBatchStatus == PaymentBatchStatus.completed ||
@@ -1340,10 +1412,7 @@ class _PaymentOperationsScreenState
   Future<void> _runZohoStep(PaymentRunCandidate candidate) async {
     setState(() => _syncingZohoRunId = candidate.payrollRunId);
     try {
-      await _orchestrationService.syncPayrollRunToZoho(
-        payrolls: candidate.payrolls,
-        payrollRunId: candidate.payrollRunId,
-      );
+      await _syncPayrollRunToZoho(candidate);
       _refreshCurrentPeriod();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1361,6 +1430,181 @@ class _PaymentOperationsScreenState
         setState(() => _syncingZohoRunId = null);
       }
     }
+  }
+
+  Future<void> _syncAllToZoho(List<PaymentRunCandidate> runCandidates) async {
+    setState(() {
+      _isSyncingAll = true;
+      _syncSuccessCount = 0;
+      _syncFailCount = 0;
+    });
+
+    try {
+      final runs = runCandidates
+          .where((candidate) => candidate.hasEligiblePayrolls)
+          .toList();
+
+      if (runs.isEmpty) {
+        if (!mounted) {
+          return;
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No payroll runs to sync.')),
+        );
+        return;
+      }
+
+      for (final run in runs) {
+        try {
+          if (mounted) {
+            setState(() => _syncingZohoRunId = run.payrollRunId);
+          }
+
+          await _syncPayrollRunToZoho(run);
+          _syncSuccessCount++;
+        } catch (error) {
+          _syncFailCount++;
+          debugPrint('Sync failed for run ${run.payrollRunId}: $error');
+        }
+      }
+
+      _refreshCurrentPeriod();
+
+      if (!mounted) {
+        return;
+      }
+
+      final message = _syncFailCount == 0
+          ? 'All $_syncSuccessCount payroll runs synced to Zoho Books successfully.'
+          : '$_syncSuccessCount synced successfully, $_syncFailCount failed.';
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: _syncFailCount == 0
+              ? AppColors.primary
+              : AppColors.warning,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sync failed: $error'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncingAll = false;
+          _syncingZohoRunId = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _syncPayrollRunToZoho(PaymentRunCandidate candidate) {
+    return _orchestrationService.syncPayrollRunToZoho(
+      payrolls: candidate.payrolls,
+      payrollRunId: candidate.payrollRunId,
+    );
+  }
+
+  Future<void> _approveAllPendingPayrolls(AppUser currentUser) async {
+    final monthLabel = _monthName(_selectedMonth);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Approve All Pending Payrolls'),
+          content: Text(
+            'Approve all eligible payrolls for $monthLabel $_selectedYear? '
+            'This will generate accounting entries and cannot be undone.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Approve All'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isApprovingAll = true);
+    try {
+      final result = await _payrollService.fastTrackApproveMonth(
+        month: _selectedMonth,
+        year: _selectedYear,
+        approverId: currentUser.id,
+      );
+
+      _refreshCurrentPeriod();
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Approved ${result.approved}, skipped ${result.skipped}, failed ${result.failed}.',
+          ),
+          action: result.failed > 0
+              ? SnackBarAction(
+                  label: 'Details',
+                  onPressed: () => _showBulkApprovalErrors(result.errors),
+                )
+              : null,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Approve all pending failed: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isApprovingAll = false);
+      }
+    }
+  }
+
+  Future<void> _showBulkApprovalErrors(List<String> errors) async {
+    if (errors.isEmpty) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Approve All Failures'),
+          content: SizedBox(
+            width: 520,
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: errors.length,
+              separatorBuilder: (_, _) => const Divider(height: 16),
+              itemBuilder: (context, index) => Text(errors[index]),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _openZohoConfigDialog({ZohoSyncConfig? existing}) async {
